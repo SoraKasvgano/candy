@@ -1,90 +1,89 @@
 // SPDX-License-Identifier: MIT
 #include "peer/peer.h"
-#include "utility/address.h"
-#include "utility/byteswap.h"
-#include <Poco/Net/NetworkInterface.h>
-#include <cstdlib>
-#include <openssl/sha.h>
+#include "core/client.h"
+#include "core/message.h"
+#include "core/net.h"
+#include <shared_mutex>
 #include <spdlog/spdlog.h>
 
 namespace Candy {
 
-int PeerInfo::setTun(uint32_t tun, const std::string &password) {
-    this->tun = tun;
-
-    if (std::endian::native == std::endian::big) {
-        tun = byteswap(tun);
-    }
-
-    std::string data;
-    data.append(password);
-    data.append((char *)&tun, sizeof(tun));
-
-    this->key.resize(SHA256_DIGEST_LENGTH);
-    SHA256((unsigned char *)data.data(), data.size(), (unsigned char *)this->key.data());
+int Peer::setPassword(const std::string &password) {
     return 0;
 }
 
-std::string PeerInfo::getKey() const {
-    return this->key;
+int Peer::setStun(const std::string &stun) {
+    return 0;
 }
 
-uint32_t PeerInfo::getTun() const {
-    return this->tun;
+int Peer::setDiscoveryInterval(int interval) {
+    return 0;
 }
 
-void PeerInfo::updateState(PeerState state) {
-    this->count = 0;
-    if (this->state == state) {
+int Peer::setForwardCost(int cost) {
+    return 0;
+}
+
+int Peer::setPort(int port) {
+    return 0;
+}
+
+int Peer::setLocalhost(const std::string &ip) {
+    return 0;
+}
+
+int Peer::run(Client *client) {
+    this->client = client;
+    this->msgThread = std::thread([&] {
+        while (this->client->running) {
+            handlePeerQueue();
+        }
+    });
+    return 0;
+}
+
+int Peer::shutdown() {
+    if (this->msgThread.joinable()) {
+        this->msgThread.join();
+    }
+    return 0;
+}
+
+void Peer::handlePeerQueue() {
+    Msg msg = this->client->peerMsgQueue.read();
+    switch (msg.kind) {
+    case MsgKind::TIMEOUT:
+        break;
+    case MsgKind::PACKET:
+        handlePacket(std::move(msg));
+        break;
+    default:
+        spdlog::warn("unexcepted peer message type: {}", static_cast<int>(msg.kind));
+        break;
+    }
+}
+
+int Peer::sendTo(IP4 dst, const Msg &msg) {
+    std::shared_lock lock(this->ipPeerMutex);
+    auto info = this->ipPeerMap.find(dst);
+    if (info == this->ipPeerMap.end()) {
+        return -1;
+    }
+    if (!info->second.isConnected()) {
+        return -1;
+    }
+    // TODO: 查找路由转发
+    return 0;
+}
+
+void Peer::handlePacket(Msg msg) {
+    IP4Header *header = (IP4Header *)msg.data.data();
+    // 尝试 P2P 转发流量
+    if (!sendTo(header->daddr, msg)) {
         return;
     }
-
-    spdlog::debug("conn state: {} {} => {}", Address::ipToStr(this->tun), getStateStr(this->state), getStateStr(state));
-    if (state == PeerState::INIT || state == PeerState::WAITING || state == PeerState::FAILED) {
-        this->wide.ip = 0;
-        this->wide.port = 0;
-        this->local.ip = 0;
-        this->local.port = 0;
-        this->real.ip = 0;
-        this->real.port = 0;
-        this->ack = 0;
-        this->delay = DELAY_LIMIT;
-    }
-    if (this->state == PeerState::WAITING && state == PeerState::INIT) {
-        this->retry = std::min(this->retry * 2, RETRY_MAX);
-    } else if (state == PeerState::INIT || state == PeerState::FAILED) {
-        this->retry = RETRY_MIN;
-    }
-    this->state = state;
-}
-
-PeerState PeerInfo::getState() const {
-    return this->state;
-}
-
-std::string PeerInfo::getStateStr() const {
-    return getStateStr(this->state);
-}
-
-std::string PeerInfo::getStateStr(PeerState state) {
-    switch (state) {
-    case PeerState::INIT:
-        return "INIT";
-    case PeerState::PREPARING:
-        return "PREPARING";
-    case PeerState::SYNCHRONIZING:
-        return "SYNCHRONIZING";
-    case PeerState::CONNECTING:
-        return "CONNECTING";
-    case PeerState::CONNECTED:
-        return "CONNECTED";
-    case PeerState::WAITING:
-        return "WAITING";
-    case PeerState::FAILED:
-        return "FAILED";
-    default:
-        return "UNKNOWN";
-    }
+    // 无法通过 P2P 转发流量,交给 WS 模块通过服务端转发
+    this->client->wsMsgQueue.write(std::move(msg));
 }
 
 } // namespace Candy
