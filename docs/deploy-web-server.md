@@ -9,7 +9,7 @@
 ## 一键部署服务端
 
 ```bash
-docker run --name=cacao --restart=unless-stopped --itd -v /var/lib/cacao:/var/lib/cacao -p 8080:80 docker.io/lanthora/cacao:latest
+docker run --name=cacao --restart=unless-stopped -itd -v /var/lib/cacao:/var/lib/cacao -p 8080:80 docker.io/lanthora/cacao:latest
 ```
 
 ## 使用
