@@ -27,24 +27,8 @@
 
 namespace candy {
 
-class MacTun {
-public:
+struct Tun::Impl {
     int setName(const std::string &name) {
-        this->name = name.empty() ? "candy" : "candy-" + name;
-        return 0;
-    }
-
-    int setIP(IP4 ip) {
-        this->ip = ip;
-        return 0;
-    }
-
-    IP4 getIP() {
-        return this->ip;
-    }
-
-    int setMask(IP4 mask) {
-        this->mask = mask;
         return 0;
     }
 
@@ -53,22 +37,22 @@ public:
         return 0;
     }
 
-    int up() {
-        // 创建设备,操作系统不允许自定义设备名,只能由内核分配
+    int up(IP4 ip, IP4 mask) {
+        // Create the device; macOS does not allow custom device names (kernel-assigned)
         this->tunFd = socket(PF_SYSTEM, SOCK_DGRAM, SYSPROTO_CONTROL);
         if (this->tunFd < 0) {
-            candy::logger().fatal(Poco::format("create socket failed: %s", strerror(errno)));
+            candy::logger().fatal(Poco::format("create socket failed: %s", std::string(strerror(errno))));
             return -1;
         }
         int flags = fcntl(this->tunFd, F_GETFL, 0);
         if (flags < 0) {
-            candy::logger().error(Poco::format("get tun flags failed: %s", strerror(errno)));
+            candy::logger().error(Poco::format("get tun flags failed: %s", std::string(strerror(errno))));
             close(this->tunFd);
             return -1;
         }
         flags |= O_NONBLOCK;
         if (fcntl(this->tunFd, F_SETFL, flags) < 0) {
-            candy::logger().error(Poco::format("set non-blocking tun failed: %s", strerror(errno)));
+            candy::logger().error(Poco::format("set non-blocking tun failed: %s", std::string(strerror(errno))));
             close(this->tunFd);
             return -1;
         }
@@ -77,7 +61,7 @@ public:
         memset(&info, 0, sizeof(info));
         strncpy(info.ctl_name, UTUN_CONTROL_NAME, MAX_KCTL_NAME);
         if (ioctl(this->tunFd, CTLIOCGINFO, &info) == -1) {
-            candy::logger().fatal(Poco::format("get control id failed: %s", strerror(errno)));
+            candy::logger().fatal(Poco::format("get control id failed: %s", std::string(strerror(errno))));
             close(this->tunFd);
             return -1;
         }
@@ -90,25 +74,25 @@ public:
         ctl.sc_id = info.ctl_id;
         ctl.sc_unit = 0;
         if (connect(this->tunFd, (struct sockaddr *)&ctl, sizeof(ctl)) == -1) {
-            candy::logger().fatal(Poco::format("connect to control failed: %s", strerror(errno)));
+            candy::logger().fatal(Poco::format("connect to control failed: %s", std::string(strerror(errno))));
             close(this->tunFd);
             return -1;
         }
 
         socklen_t ifname_len = sizeof(ifname);
         if (getsockopt(this->tunFd, SYSPROTO_CONTROL, UTUN_OPT_IFNAME, ifname, &ifname_len) == -1) {
-            candy::logger().fatal(Poco::format("get interface name failed: %s", strerror(errno)));
+            candy::logger().fatal(Poco::format("get interface name failed: %s", std::string(strerror(errno))));
             close(this->tunFd);
             return -1;
         }
 
-        candy::logger().debug(Poco::format("created utun interface: %s", ifname));
+        candy::logger().debug(Poco::format("created utun interface: %s", std::string(ifname)));
 
         struct ifreq ifr;
         memset(&ifr, 0, sizeof(ifr));
         strncpy(ifr.ifr_name, ifname, IFNAMSIZ);
 
-        // 创建 socket, 并通过这个 socket 更新网卡的其他配置
+        // Create a socket for configuring additional interface settings
         struct sockaddr_in *addr;
         addr = (struct sockaddr_in *)&ifr.ifr_addr;
         addr->sin_family = AF_INET;
@@ -119,31 +103,31 @@ public:
             return -1;
         }
 
-        // 设置地址和掩码
+        // Set address and mask
         struct ifaliasreq areq;
         memset(&areq, 0, sizeof(areq));
         strncpy(areq.ifra_name, ifname, IFNAMSIZ);
         ((struct sockaddr_in *)&areq.ifra_addr)->sin_family = AF_INET;
         ((struct sockaddr_in *)&areq.ifra_addr)->sin_len = sizeof(areq.ifra_addr);
-        ((struct sockaddr_in *)&areq.ifra_addr)->sin_addr.s_addr = this->ip;
+        ((struct sockaddr_in *)&areq.ifra_addr)->sin_addr.s_addr = ip;
 
         ((struct sockaddr_in *)&areq.ifra_mask)->sin_family = AF_INET;
         ((struct sockaddr_in *)&areq.ifra_mask)->sin_len = sizeof(areq.ifra_mask);
-        ((struct sockaddr_in *)&areq.ifra_mask)->sin_addr.s_addr = this->mask;
+        ((struct sockaddr_in *)&areq.ifra_mask)->sin_addr.s_addr = mask;
 
         ((struct sockaddr_in *)&areq.ifra_broadaddr)->sin_family = AF_INET;
         ((struct sockaddr_in *)&areq.ifra_broadaddr)->sin_len = sizeof(areq.ifra_broadaddr);
-        ((struct sockaddr_in *)&areq.ifra_broadaddr)->sin_addr.s_addr = (this->ip & this->mask);
+        ((struct sockaddr_in *)&areq.ifra_broadaddr)->sin_addr.s_addr = (ip & mask);
 
         if (ioctl(sockfd, SIOCAIFADDR, (void *)&areq) == -1) {
-            candy::logger().fatal(Poco::format("set ip mask failed: %s: ip %s mask %s", strerror(errno), this->ip.toString(),
-                                               this->mask.toString()));
+            candy::logger().fatal(Poco::format("set ip mask failed: %s: ip %s mask %s", std::string(strerror(errno)),
+                                               ip.toString(), mask.toString()));
             close(sockfd);
             close(this->tunFd);
             return -1;
         }
 
-        // 设置 MTU
+        // Set MTU
         ifr.ifr_mtu = this->mtu;
         if (ioctl(sockfd, SIOCSIFMTU, &ifr) == -1) {
             candy::logger().fatal(Poco::format("set mtu failed: mtu %d", this->mtu));
@@ -152,7 +136,7 @@ public:
             return -1;
         }
 
-        // 设置 flags
+        // Set flags
         if (ioctl(sockfd, SIOCGIFFLAGS, &ifr) == -1) {
             candy::logger().fatal("get interface flags failed");
             close(sockfd);
@@ -168,8 +152,8 @@ public:
         }
         close(sockfd);
 
-        // 设置路由
-        if (setSysRtTable(this->ip & this->mask, this->mask, this->ip)) {
+        // Set route
+        if (setSysRtTable(ip & mask, mask, ip)) {
             close(this->tunFd);
             return -1;
         }
@@ -216,7 +200,8 @@ public:
         iov[0].iov_len = sizeof(this->packetinfo);
         iov[1].iov_base = (void *)buffer.data();
         iov[1].iov_len = buffer.size();
-        return ::writev(this->tunFd, iov, sizeof(iov) / sizeof(iov[0])) - sizeof(sizeof(this->packetinfo));
+        auto size = ::writev(this->tunFd, iov, sizeof(iov) / sizeof(iov[0]));
+        return size - sizeof(this->packetinfo);
     }
 
     int setSysRtTable(IP4 dst, IP4 mask, IP4 nexthop) {
@@ -241,11 +226,11 @@ public:
 
         int routefd = socket(AF_ROUTE, SOCK_RAW, 0);
         if (routefd < 0) {
-            candy::logger().error(Poco::format("create route fd failed: %s", strerror(routefd)));
+            candy::logger().error(Poco::format("create route fd failed: %s", std::string(strerror(routefd))));
             return -1;
         }
         if (::write(routefd, &msg, sizeof(msg)) == -1) {
-            candy::logger().error(Poco::format("add route failed: %s", strerror(errno)));
+            candy::logger().error(Poco::format("add route failed: %s", std::string(strerror(errno))));
             close(routefd);
             return -1;
         }
@@ -254,98 +239,45 @@ public:
     }
 
 private:
-    std::string name;
     char ifname[IFNAMSIZ] = {0};
-    IP4 ip;
-    IP4 mask;
     int mtu;
-    int timeout;
     int tunFd;
 
     uint8_t packetinfo[4] = {0x00, 0x00, 0x00, 0x02};
 };
 
-} // namespace candy
-
-namespace candy {
-
 Tun::Tun() {
-    this->impl = std::make_shared<MacTun>();
+    this->impl = std::make_unique<Impl>();
 }
 
-Tun::~Tun() {
-    this->impl.reset();
-}
+Tun::~Tun() {}
 
 int Tun::setName(const std::string &name) {
-    std::shared_ptr<MacTun> tun;
-
-    tun = std::any_cast<std::shared_ptr<MacTun>>(this->impl);
-    tun->setName(name);
-    return 0;
-}
-
-int Tun::setAddress(const std::string &cidr) {
-    std::shared_ptr<MacTun> tun;
-    Address address;
-
-    if (address.fromCidr(cidr)) {
-        return -1;
-    }
-    candy::logger().information(Poco::format("client address: %s", address.toCidr()));
-    tun = std::any_cast<std::shared_ptr<MacTun>>(this->impl);
-    if (tun->setIP(address.Host())) {
-        return -1;
-    }
-    if (tun->setMask(address.Mask())) {
-        return -1;
-    }
-    return 0;
-}
-
-IP4 Tun::getIP() {
-    std::shared_ptr<MacTun> tun;
-    tun = std::any_cast<std::shared_ptr<MacTun>>(this->impl);
-    return tun->getIP();
+    return this->impl->setName(name);
 }
 
 int Tun::setMTU(int mtu) {
-    std::shared_ptr<MacTun> tun;
-    tun = std::any_cast<std::shared_ptr<MacTun>>(this->impl);
-    if (tun->setMTU(mtu)) {
-        return -1;
-    }
-    return 0;
+    return this->impl->setMTU(mtu);
 }
 
 int Tun::up() {
-    std::shared_ptr<MacTun> tun;
-    tun = std::any_cast<std::shared_ptr<MacTun>>(this->impl);
-    return tun->up();
+    return this->impl->up(this->ip, this->mask);
 }
 
 int Tun::down() {
-    std::shared_ptr<MacTun> tun;
-    tun = std::any_cast<std::shared_ptr<MacTun>>(this->impl);
-    return tun->down();
+    return this->impl->down();
 }
 
 int Tun::read(std::string &buffer) {
-    std::shared_ptr<MacTun> tun;
-    tun = std::any_cast<std::shared_ptr<MacTun>>(this->impl);
-    return tun->read(buffer);
+    return this->impl->read(buffer);
 }
 
 int Tun::write(const std::string &buffer) {
-    std::shared_ptr<MacTun> tun;
-    tun = std::any_cast<std::shared_ptr<MacTun>>(this->impl);
-    return tun->write(buffer);
+    return this->impl->write(buffer);
 }
 
 int Tun::setSysRtTable(IP4 dst, IP4 mask, IP4 nexthop) {
-    std::shared_ptr<MacTun> tun;
-    tun = std::any_cast<std::shared_ptr<MacTun>>(this->impl);
-    return tun->setSysRtTable(dst, mask, nexthop);
+    return this->impl->setSysRtTable(dst, mask, nexthop);
 }
 
 } // namespace candy
